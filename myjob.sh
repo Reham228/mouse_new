@@ -19,3 +19,28 @@ source activate /home/username/mouse_env
 
 # Your job commands go here
 python -m examples.watts_GCMR_Design_reflector > output_ref_GCMR.txt
+
+#!/bin/bash
+
+#SBATCH --time=35:00:00
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --nodes=1
+#SBATCH --wckey=edu_class
+#SBATCH -J hpmr_reference
+#SBATCH --mail-user=reham.abdelnasser@inl.gov
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH --output=hpmr_reference_%j.out
+#SBATCH --error=hpmr_reference_%j.err
+
+# Load modules / activate environment as required on your cluster
+source ~/.bashrc
+conda activate openmc-env
+
+# Use all allocated CPU cores with OpenMP
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+cd /home/abderi/thesis/MOUSE
+
+python -m examples.watts_exec_HPMR
