@@ -7,6 +7,7 @@ import traceback  # print full stack traces for OpenMC failures
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from core_design.correction_factor import corrected_keff_2d
+#from core_design.correction_factor import corrected_keff_steady_state
 from core_design.peaking_factor import compute_pin_peaking_factors
 
 import pandas
@@ -332,6 +333,35 @@ def openmc_depletion(params, lattice_geometry, settings):
         pf_summary = None
         pf_per_step = None
 
+    # ==========================================================
+    # Beginning-of-Life results
+    # ==========================================================
+    params['BOL keff 2D'] = float(keff_2d_values[0])
+
+    params['BOL Corrected keff'] = \
+        float(keff_2d_values_corrected[0])
+
+    params['BOL Correction Factor'] = \
+        float(bol_axial_non_leakage_probability)
+
+    params['BOL Axial Leakage (%)'] = \
+        float(bol_axial_leakage_percent)
+
+    if pf_summary is not None and not pf_summary.empty:
+        bol_row = pf_summary.sort_values('Step').iloc[0]
+
+        params['BOL Peaking Factor'] = \
+            float(bol_row['Max_PF'])
+
+        params['BOL PF Region'] = \
+            bol_row['Region_ID_Max']
+    else:
+        params['BOL Peaking Factor'] = np.nan
+        params['BOL PF Region'] = None
+ 
+    # ==========================================================
+    # Beginning-of-Life fuel inventory
+    # ==========================================================    
     orig_material = depletion_2d_results_file.export_to_materials(0)
     mass_U235 = orig_material[0].get_mass('U235')
     mass_U238 = orig_material[0].get_mass('U238')
@@ -363,6 +393,31 @@ def run_depletion_analysis(params):
     params['Mass U235'] = mass_U235
     params['Mass U238'] = mass_U238
     params['Uranium Mass'] = (mass_U235 + mass_U238) / 1000
+
+# def run_steady_state_analysis(params):
+#     import glob
+
+#     openmc.run()
+
+#     statepoint_file = sorted(glob.glob("statepoint.*.h5"))[-1]
+
+#     keff_2d, keff_3d_corrected, p_nl_axial = corrected_keff_steady_state(
+#         statepoint_file,
+#         params['Active Height'] + 2 * params['Axial Reflector Thickness'],
+#         core_radius=params.get('Core Radius', np.nan)
+#     )
+
+#     params['keff 2D'] = [float(keff_2d)]
+#     params['keff 3D (2D corrected)'] = [float(keff_3d_corrected)]
+#     params['Depletion Time Steps'] = [0.0]
+
+#     params['BOL Axial Non-Leakage Probability'] = p_nl_axial
+#     params['Estimated Axial Leakage (%)'] = (1.0 - p_nl_axial) * 100.0
+
+#     params['Fuel Lifetime'] = np.nan
+#     params['Mass U235'] = np.nan
+#     params['Mass U238'] = np.nan
+#     params['Uranium Mass'] = np.nan
 
 
 def _sum_nuclide_mass(materials, nuclide):
@@ -544,6 +599,7 @@ def run_openmc(build_openmc_model, heat_flux_monitor, params):
             params['Common Temperature'] = params['Cold Shutdown Temperature']
             openmc_plugin = watts.PluginOpenMC(build_openmc_model, show_stderr=True)
             openmc_plugin(params, function=lambda: run_depletion_analysis(params))
+            #openmc_plugin(params, function=lambda: run_steady_state_analysis(params))
             params['keff 2D ARI'] = params['keff 2D']
             params['keff 3D (2D corrected) ARI'] = params['keff 3D (2D corrected)']
 
@@ -551,6 +607,7 @@ def run_openmc(build_openmc_model, heat_flux_monitor, params):
             params['Common Temperature'] = original_common_temperature
             openmc_plugin = watts.PluginOpenMC(build_openmc_model, show_stderr=True)
             openmc_plugin(params, function=lambda: run_depletion_analysis(params))
+            #openmc_plugin(params, function=lambda: run_steady_state_analysis(params))
             params['keff 2D ARO'] = params['keff 2D']
             params['keff 3D (2D corrected) ARO'] = params['keff 3D (2D corrected)']
 
@@ -583,6 +640,7 @@ def run_openmc(build_openmc_model, heat_flux_monitor, params):
 
                 openmc_plugin = watts.PluginOpenMC(build_openmc_model, show_stderr=True)
                 openmc_plugin(params, function=lambda: run_depletion_analysis(params))
+                #openmc_plugin(params, function=lambda: run_steady_state_analysis(params))
                 params['keff 2D ARO'] = params['keff 2D']
                 params['keff 3D (2D corrected) ARO'] = params['keff 3D (2D corrected)']
 

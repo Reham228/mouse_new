@@ -1,142 +1,833 @@
+# import re
+# import glob
+# from pathlib import Path
+
+# import openmc
+# import pandas as pd
+# import numpy as np
+
+# def natural_sort_key(s: str):
+#     """Natural sort key: n0, n1, ..., n10 instead of n0, n1, n10, n2..."""
+#     return [int(text) if text.isdigit() else text for text in re.split(r'(\d+)', s)]
+
+
+# def compute_pin_peaking_factors(current_dir="."):
+#     """
+#     Compute peaking factors for all OpenMC depletion statepoints.
+
+#     Supports both:
+#       1) distribcell-based tally (LTMR-style)
+#       2) mesh-based tally (GCMR-style)
+
+#     For each statepoint:
+#       - Reads tally 'pin_power_kappa'
+#       - Sums kappa-fission power by pin/cell or mesh voxel
+#       - Computes PF = P_i / mean(P)
+
+#     Returns:
+#       summary       : DataFrame with columns [Step, Max_PF, Region_ID_Max]
+#       per_step_data : dict[step] -> DataFrame [Region_ID, Peaking_Factor, Step]
+#     """
+
+#     base = Path(current_dir)
+
+#     sp_files = glob.glob(str(base / "openmc_simulation_n*.h5"))
+#     sp_files = sorted(sp_files, key=natural_sort_key)
+
+#     if not sp_files:
+#         print("\n[PF] No depletion statepoint files found in:", base)
+#         print("[PF] Expected files like 'openmc_simulation_n0.h5', 'openmc_simulation_n1.h5', ...\n")
+#         return pd.DataFrame(), {}
+
+#     tally_name = "pin_power_kappa"
+#     results = []
+#     per_step_data = {}
+
+#     print("\n================ PEAKING FACTOR RESULTS ================\n")
+
+#     for sp_file in sp_files:
+#         sp_path = Path(sp_file)
+#         basename = sp_path.name
+
+#         m = re.search(r"n(\d+)\.h5", basename)
+#         if m:
+#             step_raw = int(m.group(1))
+#             step = step_raw + 1
+#         else:
+#             step = basename
+
+#         sp = openmc.StatePoint(str(sp_path))
+#         t = sp.get_tally(name=tally_name)
+#         df = t.get_pandas_dataframe(paths=False)
+
+#         print("\n" + "=" * 70)
+#         print(f"[PF DEBUG] Statepoint: {basename}")
+#         print("=" * 70)
+
+#         print("[PF DEBUG] Tally filters:")
+#         for filt in t.filters:
+#             print(f"    {type(filt).__name__}: {filt}")
+
+#         print("\n[PF DEBUG] Raw DataFrame columns:")
+#         print(df.columns.tolist())
+
+#         print("\n[PF DEBUG] First five rows:")
+#         print(df.head())
+
+#         print("=" * 70)
+
+#         # OpenMC returns MultiIndex (tuple) column names for multi-filter tallies
+#         # (e.g. MeshFilter + MaterialFilter in GCMR).  Flatten to plain strings so
+#         # that string operations below work regardless of OpenMC version.
+#         if any(isinstance(c, tuple) for c in df.columns):
+#             df.columns = [
+#                 " ".join(str(x) for x in c if str(x).strip()).strip()
+#                 if isinstance(c, tuple) else c
+#                 for c in df.columns
+#             ]
+
+#         # Detect tally format: distribcell (LTMR) or mesh-based (GCMR).
+#         # Mesh column names depend on the OpenMC version and how many meshes have been
+#         # created in the session (the mesh ID counter increments globally, so when
+#         # build_openmc_model_GCMR is called twice — e.g. for Isothermal Temperature
+#         # Coefficients — the second mesh gets ID 2, not 1).  We detect the mesh
+#         # columns dynamically by regex rather than hard-coding "mesh 1 x" etc.
+#         x_cols = [c for c in df.columns if re.match(r"mesh \d+ x$", c)]
+#         y_cols = [c for c in df.columns if re.match(r"mesh \d+ y$", c)]
+#         z_cols = [c for c in df.columns if re.match(r"mesh \d+ z$", c)]
+#         flat_mesh_cols = [c for c in df.columns if re.match(r"mesh \d+$", c)]
+
+#         if "distribcell" in df.columns:
+#             tally_type = "distribcell"
+#             per_region = df.groupby("distribcell")["mean"].sum()
+#         elif x_cols and y_cols and z_cols:
+#             # New OpenMC format: separate x / y / z columns
+#             tally_type = "mesh_xyz"
+#             per_region = df.groupby([x_cols[0], y_cols[0], z_cols[0]])["mean"].sum()
+#         elif flat_mesh_cols:
+#             # Old OpenMC format: single "mesh N" column (flat voxel index)
+#             tally_type = "mesh_flat"
+#             per_region = df.groupby(flat_mesh_cols[0])["mean"].sum()
+#         else:
+#             raise ValueError(
+#                 "[PF] Unsupported tally format. Expected a distribcell or mesh tally. "
+#                 f"Found columns: {list(df.columns)}"
+#             )
+
+#         # Remove zero-power bins/cells
+#         per_region = per_region[per_region > 0]
+
+#         if len(per_region) == 0:
+#             print(f"[PF] WARNING: no positive-power regions found in step {step}. Skipping.")
+#             continue
+
+#         pf = per_region / per_region.mean()
+
+#         # Build region IDs aligned with the zero-power-filtered index
+#         if tally_type == "distribcell":
+#             region_ids = pf.index.tolist()
+#         elif tally_type == "mesh_xyz":
+#             region_ids = [f"({i},{j},{k})" for i, j, k in pf.index.tolist()]
+#         else:  # mesh_flat
+#             region_ids = [str(idx) for idx in pf.index.tolist()]
+
+#         out = pd.DataFrame({
+#             "Region_ID": region_ids,
+#             "Peaking_Factor": pf.values,
+#             "Step": step
+#         })
+
+#         per_step_data[step] = out
+
+#         print(f"--- Peaking factors for depletion step {step} ---")
+#         print(out[["Region_ID", "Peaking_Factor"]].to_string(index=False))
+#         print()
+
+#         results.append({
+#             "Step": step,
+#             "Max_PF": float(pf.max()),
+#             "Region_ID_Max": out.loc[out["Peaking_Factor"].idxmax(), "Region_ID"]
+#         })
+
+#     summary = pd.DataFrame(results).sort_values("Step")
+
+#     print("========== Peaking Factor Summary ==========")
+#     print(summary.to_string(index=False))
+#     print("============================================\n")
+
+#     return summary, per_step_data
+
 import re
 import glob
 from pathlib import Path
 
 import openmc
 import pandas as pd
+import numpy as np
 
 
 def natural_sort_key(s: str):
-    """Natural sort key: n0, n1, ..., n10 instead of n0, n1, n10, n2..."""
-    return [int(text) if text.isdigit() else text for text in re.split(r'(\d+)', s)]
+    """
+    Natural sort key:
+    n0, n1, ..., n10
+    instead of
+    n0, n1, n10, n2...
+    """
+    return [
+        int(text) if text.isdigit() else text
+        for text in re.split(r'(\d+)', s)
+    ]
 
 
 def compute_pin_peaking_factors(current_dir="."):
     """
-    Compute peaking factors for all OpenMC depletion statepoints.
+    Compute power peaking factors for all OpenMC depletion statepoints.
 
-    Supports both:
-      1) distribcell-based tally (LTMR-style)
-      2) mesh-based tally (GCMR-style)
+    Supports:
+      1) Distribcell-based tallies
+         - LTMR
+         - HPMR
+
+      2) Mesh-based tallies
+         - GCMR
 
     For each statepoint:
       - Reads tally 'pin_power_kappa'
-      - Sums kappa-fission power by pin/cell or mesh voxel
-      - Computes PF = P_i / mean(P)
+      - Extracts kappa-fission power
+      - Removes zero-power regions
+      - Computes:
 
-    Returns:
-      summary       : DataFrame with columns [Step, Max_PF, Region_ID_Max]
-      per_step_data : dict[step] -> DataFrame [Region_ID, Peaking_Factor, Step]
+            PF_i = P_i / mean(P)
+
+      - Determines maximum PF for the depletion state
+
+    Returns
+    -------
+    summary : pandas.DataFrame
+        Columns:
+            Step
+            Max_PF
+            Region_ID_Max
+
+    per_step_data : dict
+        Dictionary:
+            step -> DataFrame
+
+        Each DataFrame contains:
+            Region_ID
+            Peaking_Factor
+            Step
     """
 
     base = Path(current_dir)
 
-    sp_files = glob.glob(str(base / "openmc_simulation_n*.h5"))
-    sp_files = sorted(sp_files, key=natural_sort_key)
+    # ---------------------------------------------------------
+    # Find all depletion statepoint files
+    # ---------------------------------------------------------
+
+    sp_files = glob.glob(
+        str(base / "openmc_simulation_n*.h5")
+    )
+
+    sp_files = sorted(
+        sp_files,
+        key=natural_sort_key
+    )
 
     if not sp_files:
-        print("\n[PF] No depletion statepoint files found in:", base)
-        print("[PF] Expected files like 'openmc_simulation_n0.h5', 'openmc_simulation_n1.h5', ...\n")
+
+        print(
+            "\n[PF] No depletion statepoint files found in:",
+            base
+        )
+
+        print(
+            "[PF] Expected files such as "
+            "'openmc_simulation_n0.h5', "
+            "'openmc_simulation_n1.h5', ...\n"
+        )
+
         return pd.DataFrame(), {}
 
+
     tally_name = "pin_power_kappa"
+
     results = []
     per_step_data = {}
 
-    print("\n================ PEAKING FACTOR RESULTS ================\n")
+
+    print(
+        "\n================ PEAKING FACTOR RESULTS "
+        "================\n"
+    )
+
+
+    # =========================================================
+    # Loop over depletion statepoints
+    # =========================================================
 
     for sp_file in sp_files:
+
         sp_path = Path(sp_file)
         basename = sp_path.name
 
-        m = re.search(r"n(\d+)\.h5", basename)
+        # -----------------------------------------------------
+        # Determine depletion step number
+        # -----------------------------------------------------
+
+        m = re.search(
+            r"n(\d+)\.h5",
+            basename
+        )
+
         if m:
-            step_raw = int(m.group(1))
-            step = step_raw + 1
-        else:
-            step = basename
 
-        sp = openmc.StatePoint(str(sp_path))
-        t = sp.get_tally(name=tally_name)
-        df = t.get_pandas_dataframe(paths=False)
-
-        # OpenMC returns MultiIndex (tuple) column names for multi-filter tallies
-        # (e.g. MeshFilter + MaterialFilter in GCMR).  Flatten to plain strings so
-        # that string operations below work regardless of OpenMC version.
-        if any(isinstance(c, tuple) for c in df.columns):
-            df.columns = [
-                " ".join(str(x) for x in c if str(x).strip()).strip()
-                if isinstance(c, tuple) else c
-                for c in df.columns
-            ]
-
-        # Detect tally format: distribcell (LTMR) or mesh-based (GCMR).
-        # Mesh column names depend on the OpenMC version and how many meshes have been
-        # created in the session (the mesh ID counter increments globally, so when
-        # build_openmc_model_GCMR is called twice — e.g. for Isothermal Temperature
-        # Coefficients — the second mesh gets ID 2, not 1).  We detect the mesh
-        # columns dynamically by regex rather than hard-coding "mesh 1 x" etc.
-        x_cols = [c for c in df.columns if re.match(r"mesh \d+ x$", c)]
-        y_cols = [c for c in df.columns if re.match(r"mesh \d+ y$", c)]
-        z_cols = [c for c in df.columns if re.match(r"mesh \d+ z$", c)]
-        flat_mesh_cols = [c for c in df.columns if re.match(r"mesh \d+$", c)]
-
-        if "distribcell" in df.columns:
-            tally_type = "distribcell"
-            per_region = df.groupby("distribcell")["mean"].sum()
-        elif x_cols and y_cols and z_cols:
-            # New OpenMC format: separate x / y / z columns
-            tally_type = "mesh_xyz"
-            per_region = df.groupby([x_cols[0], y_cols[0], z_cols[0]])["mean"].sum()
-        elif flat_mesh_cols:
-            # Old OpenMC format: single "mesh N" column (flat voxel index)
-            tally_type = "mesh_flat"
-            per_region = df.groupby(flat_mesh_cols[0])["mean"].sum()
-        else:
-            raise ValueError(
-                "[PF] Unsupported tally format. Expected a distribcell or mesh tally. "
-                f"Found columns: {list(df.columns)}"
+            step_raw = int(
+                m.group(1)
             )
 
-        # Remove zero-power bins/cells
-        per_region = per_region[per_region > 0]
+            # n0 -> Step 1 = BOL
+            step = step_raw + 1
 
-        if len(per_region) == 0:
-            print(f"[PF] WARNING: no positive-power regions found in step {step}. Skipping.")
-            continue
+        else:
 
-        pf = per_region / per_region.mean()
+            step = basename
 
-        # Build region IDs aligned with the zero-power-filtered index
-        if tally_type == "distribcell":
-            region_ids = pf.index.tolist()
-        elif tally_type == "mesh_xyz":
-            region_ids = [f"({i},{j},{k})" for i, j, k in pf.index.tolist()]
-        else:  # mesh_flat
-            region_ids = [str(idx) for idx in pf.index.tolist()]
 
-        out = pd.DataFrame({
-            "Region_ID": region_ids,
-            "Peaking_Factor": pf.values,
-            "Step": step
-        })
+        # -----------------------------------------------------
+        # Open statepoint and retrieve tally
+        # -----------------------------------------------------
 
-        per_step_data[step] = out
+        sp = openmc.StatePoint(
+            str(sp_path)
+        )
 
-        print(f"--- Peaking factors for depletion step {step} ---")
-        print(out[["Region_ID", "Peaking_Factor"]].to_string(index=False))
+        t = sp.get_tally(
+            name=tally_name
+        )
+
+
+        print("\n" + "=" * 70)
+        print(
+            f"[PF DEBUG] Statepoint: "
+            f"{basename}"
+        )
+        print("=" * 70)
+
+        print(
+            "[PF DEBUG] Tally filters:"
+        )
+
+        for filt in t.filters:
+
+            print(
+                f"    "
+                f"{type(filt).__name__}: "
+                f"{filt}"
+            )
+
+        print(
+            f"[PF DEBUG] Mean shape: "
+            f"{t.mean.shape}"
+        )
+
+        print("=" * 70)
+
+
+        # =====================================================
+        # CASE 1:
+        # Distribcell tally
+        #
+        # Used by LTMR / HPMR
+        # =====================================================
+
+        if any(
+            isinstance(
+                filt,
+                openmc.DistribcellFilter
+            )
+            for filt in t.filters
+        ):
+
+            tally_type = "distribcell"
+
+            # -------------------------------------------------
+            # Extract kappa-fission power directly
+            #
+            # Avoid get_pandas_dataframe() because some HPMR
+            # distribcell tallies can trigger:
+            #
+            # "setting an array element with a sequence"
+            # -------------------------------------------------
+
+            power = np.asarray(
+                t.mean,
+                dtype=float
+            )
+
+            # Flatten:
+            # expected shape is typically:
+            #
+            # (filter_bins, nuclides, scores)
+            #
+            # For one score and total nuclide this becomes 1-D.
+            power = (
+                power
+                .squeeze()
+                .reshape(-1)
+            )
+
+
+            print(
+                f"[PF DEBUG] Number of "
+                f"distribcell bins: "
+                f"{len(power)}"
+            )
+
+
+            # -------------------------------------------------
+            # Remove zero-power regions
+            # -------------------------------------------------
+
+            positive_mask = (
+                power > 0.0
+            )
+
+            power_positive = (
+                power[
+                    positive_mask
+                ]
+            )
+
+
+            if len(
+                power_positive
+            ) == 0:
+
+                print(
+                    f"[PF] WARNING: "
+                    f"no positive-power regions "
+                    f"found in step {step}. "
+                    f"Skipping."
+                )
+
+                continue
+
+
+            # -------------------------------------------------
+            # Calculate power peaking factor
+            #
+            # PF_i = P_i / average(P)
+            # -------------------------------------------------
+
+            average_power = (
+                power_positive.mean()
+            )
+
+            pf_values = (
+                power_positive
+                / average_power
+            )
+
+
+            # -------------------------------------------------
+            # Distribcell region IDs
+            #
+            # Here the region ID is the distribcell instance
+            # index corresponding to the tally bin.
+            # -------------------------------------------------
+
+            all_region_ids = np.arange(
+                len(power)
+            )
+
+            region_ids = (
+                all_region_ids[
+                    positive_mask
+                ]
+            )
+
+
+            out = pd.DataFrame({
+                "Region_ID":
+                    region_ids,
+
+                "Peaking_Factor":
+                    pf_values,
+
+                "Step":
+                    step
+            })
+
+
+        # =====================================================
+        # CASE 2:
+        # Mesh tally
+        #
+        # Used by GCMR
+        # =====================================================
+
+        else:
+
+            # -------------------------------------------------
+            # Convert tally to Pandas only for non-distribcell
+            # tally formats.
+            # -------------------------------------------------
+
+            df = (
+                t.get_pandas_dataframe(
+                    paths=False
+                )
+            )
+
+
+            print(
+                "[PF DEBUG] "
+                "Pandas conversion successful"
+            )
+
+            print(
+                "[PF DEBUG] "
+                "Raw DataFrame columns:"
+            )
+
+            print(
+                df.columns.tolist()
+            )
+
+
+            # -------------------------------------------------
+            # Flatten MultiIndex / tuple columns
+            # -------------------------------------------------
+
+            if any(
+                isinstance(c, tuple)
+                for c in df.columns
+            ):
+
+                df.columns = [
+
+                    " ".join(
+                        str(x)
+                        for x in c
+                        if str(x).strip()
+                    ).strip()
+
+                    if isinstance(
+                        c,
+                        tuple
+                    )
+
+                    else c
+
+                    for c in df.columns
+                ]
+
+
+            # -------------------------------------------------
+            # Detect mesh column format
+            # -------------------------------------------------
+
+            x_cols = [
+                c
+                for c in df.columns
+                if re.match(
+                    r"mesh \d+ x$",
+                    c
+                )
+            ]
+
+            y_cols = [
+                c
+                for c in df.columns
+                if re.match(
+                    r"mesh \d+ y$",
+                    c
+                )
+            ]
+
+            z_cols = [
+                c
+                for c in df.columns
+                if re.match(
+                    r"mesh \d+ z$",
+                    c
+                )
+            ]
+
+            flat_mesh_cols = [
+                c
+                for c in df.columns
+                if re.match(
+                    r"mesh \d+$",
+                    c
+                )
+            ]
+
+
+            # -------------------------------------------------
+            # New OpenMC mesh format:
+            # mesh N x / mesh N y / mesh N z
+            # -------------------------------------------------
+
+            if (
+                x_cols
+                and y_cols
+                and z_cols
+            ):
+
+                tally_type = (
+                    "mesh_xyz"
+                )
+
+                per_region = (
+                    df.groupby(
+                        [
+                            x_cols[0],
+                            y_cols[0],
+                            z_cols[0]
+                        ]
+                    )["mean"]
+                    .sum()
+                )
+
+
+            # -------------------------------------------------
+            # Older OpenMC mesh format:
+            # one flat mesh index column
+            # -------------------------------------------------
+
+            elif flat_mesh_cols:
+
+                tally_type = (
+                    "mesh_flat"
+                )
+
+                per_region = (
+                    df.groupby(
+                        flat_mesh_cols[0]
+                    )["mean"]
+                    .sum()
+                )
+
+
+            else:
+
+                raise ValueError(
+                    "[PF] Unsupported tally "
+                    "format. Expected "
+                    "DistribcellFilter or "
+                    "mesh tally. "
+                    f"Found columns: "
+                    f"{list(df.columns)}"
+                )
+
+
+            # -------------------------------------------------
+            # Remove zero-power regions
+            # -------------------------------------------------
+
+            per_region = (
+                per_region[
+                    per_region > 0
+                ]
+            )
+
+
+            if len(
+                per_region
+            ) == 0:
+
+                print(
+                    f"[PF] WARNING: "
+                    f"no positive-power regions "
+                    f"found in step {step}. "
+                    f"Skipping."
+                )
+
+                continue
+
+
+            # -------------------------------------------------
+            # Calculate peaking factors
+            # -------------------------------------------------
+
+            pf_values = (
+                per_region.values
+                / per_region.values.mean()
+            )
+
+
+            # -------------------------------------------------
+            # Region IDs
+            # -------------------------------------------------
+
+            if (
+                tally_type
+                == "mesh_xyz"
+            ):
+
+                region_ids = [
+
+                    f"({i},{j},{k})"
+
+                    for i, j, k
+                    in (
+                        per_region
+                        .index
+                        .tolist()
+                    )
+                ]
+
+
+            else:
+
+                region_ids = [
+
+                    str(idx)
+
+                    for idx
+                    in (
+                        per_region
+                        .index
+                        .tolist()
+                    )
+                ]
+
+
+            out = pd.DataFrame({
+                "Region_ID":
+                    region_ids,
+
+                "Peaking_Factor":
+                    pf_values,
+
+                "Step":
+                    step
+            })
+
+
+        # =====================================================
+        # Save results for current depletion step
+        # =====================================================
+
+        per_step_data[
+            step
+        ] = out
+
+
+        print(
+            f"\n--- Peaking factors "
+            f"for depletion step "
+            f"{step} ---"
+        )
+
+        print(
+            out[
+                [
+                    "Region_ID",
+                    "Peaking_Factor"
+                ]
+            ].to_string(
+                index=False
+            )
+        )
+
         print()
 
+
+        # -----------------------------------------------------
+        # Maximum power peaking factor for this statepoint
+        # -----------------------------------------------------
+
+        idx_max = (
+            out[
+                "Peaking_Factor"
+            ].idxmax()
+        )
+
+
         results.append({
-            "Step": step,
-            "Max_PF": float(pf.max()),
-            "Region_ID_Max": out.loc[out["Peaking_Factor"].idxmax(), "Region_ID"]
+
+            "Step":
+                step,
+
+            "Max_PF":
+                float(
+                    out.loc[
+                        idx_max,
+                        "Peaking_Factor"
+                    ]
+                ),
+
+            "Region_ID_Max":
+                out.loc[
+                    idx_max,
+                    "Region_ID"
+                ]
         })
 
-    summary = pd.DataFrame(results).sort_values("Step")
 
-    print("========== Peaking Factor Summary ==========")
-    print(summary.to_string(index=False))
-    print("============================================\n")
+    # =========================================================
+    # Build summary
+    # =========================================================
 
-    return summary, per_step_data
+    if not results:
+
+        print(
+            "[PF] WARNING: "
+            "no valid peaking-factor "
+            "results were produced."
+        )
+
+        empty_summary = (
+            pd.DataFrame(
+                columns=[
+                    "Step",
+                    "Max_PF",
+                    "Region_ID_Max"
+                ]
+            )
+        )
+
+        return (
+            empty_summary,
+            per_step_data
+        )
+
+
+    summary = (
+        pd.DataFrame(
+            results
+        )
+        .sort_values(
+            "Step"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+
+    print(
+        "\n========== "
+        "Peaking Factor Summary "
+        "=========="
+    )
+
+    print(
+        summary.to_string(
+            index=False
+        )
+    )
+
+    print(
+        "================================"
+        "============\n"
+    )
+
+
+    return (
+        summary,
+        per_step_data
+    )

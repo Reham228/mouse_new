@@ -533,13 +533,13 @@ def build_openmc_model_HPMR(params):
     # **************************************************************************************************************************
 
     settings = openmc.Settings()
-    settings.batches = 100
-    settings.inactive = 20
+    settings.batches = 200
+    settings.inactive = 50
 
     if 'Particles' in params.keys():
         settings.particles = int(params['Particles'])
     else:
-        settings.particles = 1000
+        settings.particles = 20000
 
     settings.temperature = {
         'default': params['Common Temperature'],

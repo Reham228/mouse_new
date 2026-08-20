@@ -186,28 +186,138 @@ def calculate_drums_volumes_and_masses(params):
         if 'Drum Height' not in params:
             params['Drum Height'] = params['Active Height'] + 2 * params['Axial Reflector Thickness']
 
+    # # --- HPMR: auto-resolve dependent geometry parameters ---
+    # if params.get('reactor type') == 'HPMR':
+    #     drum_tube_radius = drum_radius + drum_radius / 90.0
+    #     n_drums = int(params.get('Drum Count', 12))
+    #     r0 = ((params['Number of Rings per Core'] - 1) * params['Assembly FTF']
+    #            + params['Assembly FTF'] / 2)
+    #     cd_distance = r0 + drum_tube_radius
+    #     hex_apothem = 0.5 * np.sqrt(3) * params['hexagonal Core Edge Length']
+
+    #     if 'Radial Reflector Thickness' not in params:
+    #         # Minimum reflector thickness that fully encloses all drums
+    #         params['Radial Reflector Thickness'] = cd_distance + drum_radius - hex_apothem
+
+    #     # Core Radius is always kept consistent with Radial Reflector Thickness
+    #     params['Core Radius'] = hex_apothem + params['Radial Reflector Thickness']
+        
+    #     if 'Axial Reflector Thickness' not in params:
+    #         params['Axial Reflector Thickness'] = params['Radial Reflector Thickness']
+
+    #     if 'Drum Height' not in params:
+    #         params['Drum Height'] = params['Active Height'] + 2 * params['Axial Reflector Thickness']
+    
     # --- HPMR: auto-resolve dependent geometry parameters ---
     if params.get('reactor type') == 'HPMR':
+
         drum_tube_radius = drum_radius + drum_radius / 90.0
         n_drums = int(params.get('Drum Count', 12))
-        r0 = ((params['Number of Rings per Core'] - 1) * params['Assembly FTF']
-               + params['Assembly FTF'] / 2)
+
+        # Drum placement radius used by the HPMR geometry
+        r0 = (
+            (params['Number of Rings per Core'] - 1)
+            * params['Assembly FTF']
+            + params['Assembly FTF'] / 2.0
+        )
+
         cd_distance = r0 + drum_tube_radius
-        hex_apothem = 0.5 * np.sqrt(3) * params['hexagonal Core Edge Length']
 
-        if 'Radial Reflector Thickness' not in params:
-            # Minimum reflector thickness that fully encloses all drums
-            params['Radial Reflector Thickness'] = cd_distance + drum_radius - hex_apothem
+        # ---------------------------------------------------------
+        # HPMR radial geometry
+        # ---------------------------------------------------------
 
-        # Core Radius is always kept consistent with Radial Reflector Thickness
-        params['Core Radius'] = hex_apothem + params['Radial Reflector Thickness']
+        # Core Radius should normally be supplied by the HPMR
+        # parameterization in watts_exec_HPMR.py.
+        #
+        # Reference relation:
+        # Core Radius =
+        #     Assembly FTF * Number of Rings per Core
+        #     + Radial Reflector Thickness
+        #
+        # Do NOT overwrite an already defined Core Radius using
+        # the hexagonal-core apothem.
+        if 'Core Radius' not in params:
+
+            if 'Radial Reflector Thickness' not in params:
+                # Minimum radial reflector needed to enclose drums
+                params['Radial Reflector Thickness'] = (
+                    cd_distance
+                    + drum_radius
+                    - params['Assembly FTF']
+                    * params['Number of Rings per Core']
+                )
+
+            params['Core Radius'] = (
+                params['Assembly FTF']
+                * params['Number of Rings per Core']
+                + params['Radial Reflector Thickness']
+            )
+
+    # If Core Radius exists but reflector thickness does not,
+    # derive reflector thickness consistently from Core Radius.
+    elif 'Radial Reflector Thickness' not in params:
+
+        params['Radial Reflector Thickness'] = (
+            params['Core Radius']
+            - params['Assembly FTF']
+            * params['Number of Rings per Core']
+        )
+
+    # ---------------------------------------------------------
+    # Axial geometry
+    # ---------------------------------------------------------
+
+    if 'Axial Reflector Thickness' not in params:
+        params['Axial Reflector Thickness'] = 20.0
+
+    if 'Drum Height' not in params:
+        params['Drum Height'] = params['Active Height']
+
+    # ---------------------------------------------------------
+    # Validate drums fit within the radial reactor boundary
+    # ---------------------------------------------------------
+
+    drum_outer = cd_distance + drum_radius
+
+    if drum_outer > params['Core Radius']:
+        raise ValueError(
+            f"\n\n--- HPMR DRUM RADIUS ERROR ---\n"
+            f"Drum outer extent ({drum_outer:.4f} cm) exceeds "
+            f"Core Radius ({params['Core Radius']:.4f} cm).\n"
+            f"Reduce Drum Radius or increase Core Radius / "
+            f"Radial Reflector Thickness.\n"
+            f"Maximum allowable Drum Radius: "
+            f"{_calculate_max_hpmr_drum_radius(params):.4f} cm\n"
+        )
+
+    if drum_radius <= absorber_thickness:
+        raise ValueError(
+            f"\n\n--- HPMR DRUM RADIUS ERROR ---\n"
+            f"Drum Radius ({drum_radius:.4f} cm) must be greater than "
+            f"Drum Absorber Thickness ({absorber_thickness:.4f} cm).\n"
+        )
+
+    # ---------------------------------------------------------
+    # Validate drum-to-drum overlap
+    # ---------------------------------------------------------
+
+    chord = (
+        2.0
+        * cd_distance
+        * np.sin(np.pi / n_drums)
+    )
+
+    if 2.0 * drum_tube_radius > chord:
+        raise ValueError(
+            f"\n\n--- HPMR DRUM OVERLAP ERROR ---\n"
+            f"Drums overlap: tube diameter "
+            f"({2 * drum_tube_radius:.4f} cm) exceeds the chord "
+            f"between adjacent drum centres ({chord:.4f} cm).\n"
+            f"Maximum allowable Drum Radius: "
+            f"{_calculate_max_hpmr_drum_radius(params):.4f} cm\n"
+        )
         
-        if 'Axial Reflector Thickness' not in params:
-            params['Axial Reflector Thickness'] = params['Radial Reflector Thickness']
-
-        if 'Drum Height' not in params:
-            params['Drum Height'] = params['Active Height'] + 2 * params['Axial Reflector Thickness']
-
         # Validate that drums fit inside the reflector
         drum_outer = cd_distance + drum_radius
         if drum_outer > params['Core Radius']:
